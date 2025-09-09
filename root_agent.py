@@ -11,8 +11,8 @@ from google.adk.sessions import InMemorySessionService
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
-from agents.sample_agent.agent import SampleAgent
-from agents.validation_agent.agent import ValidationAgent
+from agents.IngestAgent.agent import IngestAgent
+from agents.KbAgent.agent import KbAgent
 
 # ─────────────────────────────────
 # Logging setup (stdout = white text)
@@ -56,8 +56,8 @@ def wrap_agent(agent, label: str):
 
 # --- Build Loop Agent with exit strategy ---
 def get_loop_agent():
-    sample = SampleAgent().get_agent()
-    validation = ValidationAgent().get_agent()
+    sample = IngestAgent().get_agent()
+    validation = KbAgent().get_agent()
 
     # Validation agent updated to call exit_loop when correct
     validation_with_exit = LlmAgent(
@@ -80,6 +80,7 @@ def get_loop_agent():
             wrap_agent(validation_with_exit, "ValidationAgent"),
         ],
         max_iterations=5,
+
     )
 
 # --- Runner ---
