@@ -1,43 +1,57 @@
 # agent.py
+
 import asyncio
 import os
+import json
+from dotenv import load_dotenv
 
 from google.adk.agents import Agent
-from google.adk.tools import google_search
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
-from dotenv import load_dotenv
-from agents.ComplianceAgent.prompt.prompt_factory import PromptFactory
+from agents.IntegrationAgent.prompt.prompt_factory import PromptFactory
+
+# NEW imports for MCP toolset
+from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+from google.adk.tools.mcp_tool.mcp_toolset import SseConnectionParams
 
 load_dotenv()
 
+AGENT_NAME = "IntegrationAgent"
 
-AGENT_NAME="ComplianceAgent"
 
-class ComplianceAgent:
+class IntegrationAgent:
     @staticmethod
-    def get_agent() :
-        """Create and return an ADK Agent ready to use."""
-
+    def get_agent():
+        """Create and return an ADK Agent ready to use, including Jira MCP tool."""
         print(f"Initializing [🤖] : {AGENT_NAME}")
-        agent_prompt = PromptFactory().get_agent_prompt()
+        # NEW: initialize MCPToolset for Jira MCP server and BigQuery server
+        jira_mcp_url = os.getenv("JIRA_MCP_SERVER_URL")
+        bigquery_mcp_url = os.getenv("BIGQUERY_MCP_SERVER_URL")
+        # Create individual toolsets for Jira and BigQuery
+        jira_toolset = McpToolset(
+            connection_params=SseConnectionParams(url=jira_mcp_url)
+        )
 
+        bigquery_toolset = McpToolset(
+            connection_params=SseConnectionParams(url=bigquery_mcp_url)
+        )
+
+        agent_prompt = PromptFactory().get_agent_prompt()
+        # Existing agent setup, plus the MCP toolset
         return Agent(
             name=AGENT_NAME,
             model=os.getenv("GEMINI_MODEL"),
-            description="ComplianceAgent",
+            description="Assistant that uses Google Search and Jira MCP to create issues",
+            tools=[jira_toolset, bigquery_toolset],  # NEW: add MCP toolset
             instruction=agent_prompt,
-            output_key="final_test_cases",
-            disallow_transfer_to_parent=True,
-            disallow_transfer_to_peers=True
         )
 
     async def run_agent(self):
         USER_ID = "user1"
         SESSION_ID = "session1"
 
-        agent = ComplianceAgent().get_agent()
+        agent = IntegrationAgent().get_agent()
         session_service = InMemorySessionService()
         # ensure create_session is awaited (common pitfall)
         await session_service.create_session(
@@ -85,5 +99,6 @@ class ComplianceAgent:
 
             print("=" * 20)
 
+
 if __name__ == "__main__":
-    asyncio.run(ComplianceAgent().run_agent())
+    asyncio.run(IntegrationAgent().run_agent())

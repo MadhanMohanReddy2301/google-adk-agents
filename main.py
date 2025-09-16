@@ -3,6 +3,8 @@ from agents.KbAgent.agent import KbAgent
 from agents.TestCaseAgent.agent import TestCaseAgent
 from agents.EdgeCaseAgent.agent import EdgeCaseAgent
 from agents.ComplianceAgent.agent import ComplianceAgent
+from agents.TraceabilityAgent.agent import TraceabilityAgent
+from agents.IntegrationAgent.agent import IntegrationAgent
 import asyncio
 from dotenv import load_dotenv
 
@@ -16,6 +18,8 @@ kb_agent = KbAgent().get_agent()
 test_case_agent = TestCaseAgent().get_agent()
 edge_case_agent = EdgeCaseAgent().get_agent()
 compliance_agent = ComplianceAgent().get_agent()
+traceability_agent=TraceabilityAgent().get_agent()
+integration_agent=IntegrationAgent().get_agent()
 load_dotenv()
 
 AGENT_NAME = "SequentialRequirementWorkflow"
@@ -29,7 +33,7 @@ def build_workflow_agent():
     workflow = SequentialAgent(
         name=AGENT_NAME,
         description="Run ingestion first, then run compliance lookup using ingestion output.",
-        sub_agents=[ingest_agent, kb_agent,test_case_agent,edge_case_agent, compliance_agent],
+        sub_agents=[ingest_agent, kb_agent,test_case_agent,edge_case_agent, compliance_agent, traceability_agent, integration_agent],
     )
     return workflow
 
@@ -67,13 +71,21 @@ class SequentialWorkflowRunner:
             final_text = None
             try:
                 # run_async yields events; capture the final response event and print it
-                async for ev in self.runner.run_async(user_id=self.user_id, session_id=self.session_id, new_message=content):
+                async for ev in self.runner.run_async(
+                        user_id=self.user_id,
+                        session_id=self.session_id,
+                        new_message=content
+                ):
                     if ev.is_final_response() and ev.content and ev.content.parts:
                         parts_text = [p.text for p in ev.content.parts if getattr(p, "text", None)]
                         final_text = "".join(parts_text)
-                        print("-------------------NEXT AGENT IS RUNNING----------------------")
 
-                        # Print the final output returned by the last sub-agent (compliance_agent)
+                        # Use ev.author as the agent name (fallback to UnknownAgent)
+                        agent_name = getattr(ev, "author", None) or "UnknownAgent"
+                        print("="*50)
+                        print(f"------------------- {agent_name} IS RUNNING ----------------------")
+                        print("=" * 50)
+                        # Print the final output returned by the sub-agent
                         print(final_text)
             except Exception as e:
                 # Surface errors clearly for debugging

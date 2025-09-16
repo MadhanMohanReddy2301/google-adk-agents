@@ -1,105 +1,115 @@
-import sys
-import asyncio
-import logging
-from typing import AsyncGenerator
+from agents.IngestAgent.agent import IngestAgent
+from agents.KbAgent.agent import KbAgent
+from agents.TestCaseAgent.agent import TestCaseAgent
+from agents.EdgeCaseAgent.agent import EdgeCaseAgent
+from agents.ComplianceAgent.agent import ComplianceAgent
+from agents.TraceabilityAgent.agent import TraceabilityAgent
+from agents.IntegrationAgent.agent import IntegrationAgent
 
-from google.adk.agents import LoopAgent, BaseAgent
-from google.adk.agents.invocation_context import InvocationContext
-from google.adk.events import Event, EventActions
+import asyncio
+from dotenv import load_dotenv
+
+from google.adk.agents import SequentialAgent
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
-# Import your agents
-from agents.sample_agent.agent import SampleAgent
-from agents.validation_agent.agent import ValidationAgent
 
-# ---------------------------
-# Logging configuration
-# ---------------------------
-logger = logging.getLogger("LoopOrchestration")
-logger.setLevel(logging.DEBUG)
+ingest_agent = IngestAgent().get_agent()
+kb_agent = KbAgent().get_agent()
+test_case_agent = TestCaseAgent().get_agent()
+edge_case_agent = EdgeCaseAgent().get_agent()
+compliance_agent = ComplianceAgent().get_agent()
+traceability_agent = TraceabilityAgent().get_agent()
+integration_agent = IntegrationAgent().get_agent()
 
-console_handler = logging.StreamHandler(sys.stdout)
-formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s - %(message)s")
-console_handler.setFormatter(formatter)
-logger.addHandler(console_handler)
+load_dotenv()
 
-logging.getLogger("google_adk").setLevel(logging.WARNING)
-logging.getLogger("google_genai").setLevel(logging.WARNING)
+AGENT_NAME = "SequentialRequirementWorkflow"
 
-# ---------------------------
-# Stop condition agent
-# ---------------------------
-class StopWhenDone(BaseAgent):
-    async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
-        stop = False
-        if ctx.user_content and ctx.user_content.parts:
-            text = "".join([p.text for p in ctx.user_content.parts if p.text]).strip().lower()
-            if text == "done":
-                stop = True
-        logger.debug(f"[StopWhenDone] escalate stop={stop}")
-        yield Event(author=self.name, actions=EventActions(escalate=stop))
+def build_workflow_agent():
+    """
+    Compose a SequentialAgent from the already-created agents.
+    The SequentialAgent runs sub_agents in order, sharing the same invocation/session context.
+    """
 
-# ---------------------------
-# Wrap agent for labeled output
-# ---------------------------
-def wrap_agent(agent, label: str):
-    class NamedAgent(agent.__class__):
-        async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
-            async for ev in super()._run_async_impl(ctx):
-                if ev.content and ev.content.parts:
-                    for p in ev.content.parts:
-                        if getattr(p, "text", None):
-                            print(f"\n[{label}] {p.text}")
-                yield ev
-    return NamedAgent(**agent.model_dump())
-
-# ---------------------------
-# Build LoopAgent
-# ---------------------------
-def get_loop_agent():
-    sample = SampleAgent().get_agent()
-    validation = ValidationAgent().get_agent()
-
-    return LoopAgent(
-        name="loop_orchestrator",
+    workflow = SequentialAgent(
+        name=AGENT_NAME,
+        description="Run ingestion first, then run compliance lookup using ingestion output.",
         sub_agents=[
-            wrap_agent(sample, "SampleAgent"),
-            wrap_agent(validation, "ValidationAgent"),
-            StopWhenDone(name="StopWhenDone"),
+            ingest_agent,
+            kb_agent,
+            test_case_agent,
+            edge_case_agent,
+            compliance_agent,
+            traceability_agent,
+            integration_agent
         ],
-        max_iterations=5,
     )
+    return workflow
 
-# ---------------------------
-# Runner and interactive loop
-# ---------------------------
-async def run_loop_orchestration():
-    logger.info("Launching Loop Orchestration...")
+class SequentialWorkflowRunner:
+    def __init__(self, workflow_agent):
+        self.workflow = workflow_agent
+        self.session_service = InMemorySessionService()
+        self.user_id = "user1"
+        self.session_id = "session1"
+        self.runner = Runner(agent=self.workflow, app_name=AGENT_NAME, session_service=self.session_service)
 
-    root_agent = get_loop_agent()
-    session_service = InMemorySessionService()
-    await session_service.create_session(
-        app_name="loop_app", user_id="user1", session_id="session1"
-    )
+    async def create_session(self):
+        await self.session_service.create_session(
+            app_name=AGENT_NAME,
+            user_id=self.user_id,
+            session_id=self.session_id,
+        )
 
-    runner = Runner(agent=root_agent, app_name="loop_app", session_service=session_service)
-    logger.info("Type your queries. Type 'done' to exit loop, empty to quit.")
+    async def run_loop(self):
+        """Read lines from stdin and run the sequential workflow for each input."""
+        print(f"Initializing [🤖] : {AGENT_NAME}")
+        await self.create_session()
+        print("Enter your requirement text (empty to exit):")
 
-    while True:
-        user_input = await asyncio.to_thread(input, "User > ")
-        if not user_input.strip():
-            logger.info("Exiting orchestration.")
-            break
+        while True:
+            # non-blocking input wrapped in asyncio.to_thread
+            user_input = await asyncio.to_thread(input, "> ")
+            if not user_input.strip():
+                print("Goodbye!")
+                break
 
-        content = types.Content(role="user", parts=[types.Part(text=user_input)])
-        events = runner.run(user_id="user1", session_id="session1", new_message=content)
+            # Build content exactly as your other agents expect (role user + parts)
+            content = types.Content(role="user", parts=[types.Part(text=user_input)])
 
-        for _ in events:
-            pass
+            final_text = None
+            try:
+                # run_async yields events; capture the final response event and print it
+                async for ev in self.runner.run_async(
+                        user_id=self.user_id,
+                        session_id=self.session_id,
+                        new_message=content
+                ):
+                    if ev.is_final_response() and ev.content and ev.content.parts:
+                        parts_text = [p.text for p in ev.content.parts if getattr(p, "text", None)]
+                        final_text = "".join(parts_text)
 
-        print("\n" + "=" * 70)
+                        # Use ev.author as the agent name (fallback to UnknownAgent)
+                        agent_name = getattr(ev, "author", None) or "UnknownAgent"
+                        print(f"------------------- {agent_name} IS RUNNING ----------------------")
+
+                        # Print the final output returned by the sub-agent
+                        print(final_text)
+            except Exception as e:
+                # Surface errors clearly for debugging
+                print(f"Error while running sequential workflow: {e}")
+
+            print("=" * 20)
+
 
 if __name__ == "__main__":
-    asyncio.run(run_loop_orchestration())
+    try:
+        workflow_agent = build_workflow_agent()
+    except Exception as ex:
+        print("[Orchestrator] Failed to build workflow agent:", ex)
+        raise
+
+    runner = SequentialWorkflowRunner(workflow_agent)
+    asyncio.run(runner.run_loop())
